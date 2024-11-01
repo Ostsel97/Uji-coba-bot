@@ -1,0 +1,371 @@
+// ==========================================
+// ======== Securely Store Your Bot Token =======
+// ==========================================
+
+// Function to set the bot token in Script Properties (Run once)
+function setBotToken() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.setProperty('BOT_TOKEN', 'YOURBOTTOKEN'); // Replace with your new token
+}
+
+// Function to retrieve the bot token securely
+function getBotToken() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  return scriptProperties.getProperty('BOT_TOKEN');
+}
+
+// ==========================================
+// ========== Configuration Section =========
+// ==========================================
+
+// Retrieve the bot token securely
+const botToken = getBotToken();
+const telegramApiUrl = `https://api.telegram.org/bot${botToken}`;
+
+// Credentials
+const spreadsheetId = 'YOURSPREEADSHEETID';
+const dataOrderSheetName = 'Data Order';
+const logSheetName = 'Log';
+
+// Bot handle (username)
+const botHandle = 'YOURBOTTELEGRAM';
+
+// **Add Your Group Chat ID Here**
+const groupChatId = 'YOURIDGROUPTELEGRAM'; // Replace with your actual group chat ID
+
+// **Add Admin Chat ID for Error Notifications**
+const adminChatId = 'YOURTELEGRAMUSER'; // Replace with your Telegram user chat ID
+
+// **Add Your Apps Script Web App URL Here**
+const appsScriptUrl = 'YOURSCRIPTDEPLOY'; // Replace with your deployed Apps Script web app URL
+
+// ==========================================
+// =============== Helper Functions =========
+// ==========================================
+
+/**
+ * Logs messages to the 'Log' sheet with a timestamp.
+ * @param {string} logMessage - The message to log.
+ */
+function log(logMessage = '') {
+  const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+  const sheet = spreadsheet.getSheetByName(logSheetName);
+  const lastRow = sheet.getLastRow();
+  const row = lastRow + 1;
+
+  const today = new Date();
+
+  sheet.insertRowAfter(lastRow);
+  sheet.getRange(`A${row}`).setValue(today);
+  sheet.getRange(`B${row}`).setValue(logMessage);
+}
+
+/**
+ * Formats a Date object into 'DD MMM YYYY' format (e.g., '1 Jan 2024').
+ * @param {Date} date - The date to format.
+ * @returns {string} - Formatted date string.
+ */
+function formatDate(date) {
+  const monthIndoList = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'];
+
+  const dateIndo = date.getDate();
+  const monthIndo = monthIndoList[date.getMonth()];
+  const yearIndo = date.getFullYear();
+
+  return `${dateIndo} ${monthIndo} ${yearIndo}`;
+}
+
+/**
+ * Sends a message via Telegram API.
+ * @param {string} chatId - The target chat ID.
+ * @param {number|null} replyToMessageId - The message ID to reply to.
+ * @param {string} textMessage - The message text.
+ */
+function sendTelegramMessage(chatId, replyToMessageId, textMessage) {
+  const url = `${telegramApiUrl}/sendMessage`;
+
+  const data = {
+    parse_mode: 'HTML',
+    chat_id: chatId,
+    reply_to_message_id: replyToMessageId,
+    text: textMessage,
+    disable_web_page_preview: true,
+  };
+
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(data)
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(url, options).getContentText();
+    return response;
+  } catch (error) {
+    log(`Error sending message: ${error}`);
+    sendTelegramMessage(adminChatId, null, `🔴 **Error sending message:** ${error.message}`);
+  }
+}
+
+/**
+ * Parses the /input command message.
+ * @param {string} message - The message text.
+ * @returns {Object|boolean} - Parsed data or false if empty.
+ */
+function parseMessage(message = '') {
+  const splitted = message.split('\n');
+
+  let nama = '';
+  let kodeBarang = '';
+  let alamat = '';
+  let resi = '';
+
+  splitted.forEach(el => {
+    if (el.toLowerCase().startsWith('nama:')) {
+      nama = el.split(':')[1].trim();
+    } else if (el.toLowerCase().startsWith('kode barang:')) {
+      kodeBarang = el.split(':')[1].trim();
+    } else if (el.toLowerCase().startsWith('alamat:')) {
+      alamat = el.split(':')[1].trim();
+    } else if (el.toLowerCase().startsWith('resi:')) {
+      resi = el.split(':')[1].trim();
+    }
+  });
+
+  const result = {
+    nama,
+    kodeBarang,
+    alamat,
+    resi,
+  };
+
+  const isEmpty = Object.values(result).every(value => value === '');
+  return isEmpty ? false : result;
+}
+
+
+function handleUserMessage(message) {
+  const chatId = message.chat.id;
+  const receivedTextMessage = message.text.trim();
+  const command = receivedTextMessage.split(' ')[0].toLowerCase();
+  
+  switch (command) {
+    case '/start':
+      sendTelegramMessage(chatId, null, `👋 Hi! I'm your delivery assistant. Send your order details using the format:\n\nNama: [Your Name]\nKode Barang: [Item Code]\nAlamat: [Your Address]\nResi: [Tracking Number]`);
+      break;
+
+    case '/input':
+      const parsedData = parseMessage(receivedTextMessage);
+      if (parsedData) {
+        const messageId = message.message_id; // Extract message ID
+        const idOrder = inputDataOrder({ ...parsedData, chatId, messageId }); // Pass message ID
+        if (idOrder) {
+          sendTelegramMessage(chatId, null, `✅ Order received successfully with ID: ${idOrder}`);
+        } else {
+          sendTelegramMessage(chatId, null, `❌ Failed to record your order. Please try again later.`);
+        }
+      } else {
+        sendTelegramMessage(chatId, null, `❌ Invalid input format. Please use:\n\nNama: [Your Name]\nKode Barang: [Item Code]\nAlamat: [Your Address]\nResi: [Tracking Number]`);
+      }
+      break;
+
+    case '/cekresi':
+      const resi = receivedTextMessage.split(' ')[1];
+      const statusMessage = cekResi(resi);
+      sendTelegramMessage(chatId, null, statusMessage);
+      break;
+
+    default:
+      sendTelegramMessage(chatId, null, `❓ Unknown command. Use /start to see the available commands.`);
+      break;
+  }
+}
+
+
+/**
+ * Inputs order data into the 'Data Order' sheet.
+ * @param {Object} data - The order data.
+ * @returns {string|boolean} - The Order ID or false if failed.
+ */
+function inputDataOrder(data) {
+  try {
+    const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+    const sheet = spreadsheet.getSheetByName(dataOrderSheetName);
+    const lastRow = sheet.getLastRow();
+    const row = lastRow + 1;
+
+    const number = lastRow;
+    const idOrder = `ORD-${number}`;
+    const today = new Date();
+
+    sheet.insertRowAfter(lastRow);
+    sheet.getRange(`A${row}`).setValue(number);
+    sheet.getRange(`B${row}`).setValue(idOrder);
+    sheet.getRange(`C${row}`).setValue(today);
+    sheet.getRange(`D${row}`).setValue(data['nama']);
+    sheet.getRange(`E${row}`).setValue(data['kodeBarang']);
+    sheet.getRange(`F${row}`).setValue(data['alamat']);
+    sheet.getRange(`G${row}`).setValue(data['resi']);
+    sheet.getRange(`H${row}`).setValue('Sedang dikemas');
+    sheet.getRange(`I${row}`).setValue(data['chatId']);
+    sheet.getRange(`J${row}`).setValue(data['messageId']); // Save message ID in column J
+
+    return idOrder;
+
+  } catch (err) {
+    log(`Error inputDataOrder: ${err}`);
+    return false;
+  }
+}
+
+/**
+ * Checks the status of a given resi.
+ * @param {string|null} resi - The resi number.
+ * @returns {string} - The status message.
+ */
+function cekResi(resi = null) {
+  if (!resi) {
+    return 'Format pencarian resi tidak valid.';
+  }
+
+  const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+  const sheet = spreadsheet.getSheetByName(dataOrderSheetName);
+  const lastRow = sheet.getLastRow();
+
+  const range = `A2:I${lastRow}`;
+  const dataList = sheet.getRange(range).getValues();
+
+  const dataListFiltered = dataList.filter(el => el[6].toString().toLowerCase() === resi.toString().toLowerCase());
+
+  let messageReply = '';
+
+  if (dataListFiltered.length > 0) {
+    const data = dataListFiltered[0];
+    messageReply = `📦 *Info Resi* <b>${resi}</b>
+
+• *ID Order:* ${data[1]}
+• *Tanggal Order:* ${formatDate(data[2])}
+• *Nama:* ${data[3]}
+• *Kode Barang:* ${data[4]}
+• *Alamat:* ${data[5]}
+• *Status Pengiriman:* <b>${data[7]}</b>`;
+  } else {
+    messageReply = `🔍 Resi <b>${resi}</b> tidak ditemukan.`;
+  }
+
+  return messageReply;
+}
+
+/**
+ * Handles updates to the delivery status in the Google Sheet.
+ * Sends a message to the designated Telegram group when column H is updated.
+ * @param {Object} e - The event object.
+ */
+function handleUpdateDeliveryStatus(e) {
+  const row = e.range.getRow();
+  const column = e.range.getA1Notation().replace(/[^a-zA-Z]/g, '');
+  const sheetName = e.range.getSheet().getSheetName();
+
+  if (sheetName !== dataOrderSheetName || column !== 'H') {
+    return false;
+  }
+
+  const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+  const sheet = spreadsheet.getSheetByName(dataOrderSheetName);
+  const today = new Date();
+
+  const range = `A${row}:I${row}`;
+  const data = sheet.getRange(range).getValues()[0];
+
+  const idOrder = data[1];
+  const tanggalOrder = data[2];
+  const nama = data[3];
+  const kodeBarang = data[4];
+  const alamat = data[5];
+  const resi = data[6];
+  const statusPengiriman = data[7];
+  const chatId = data[8].toString();
+
+  const textMessage = `📦 *Update Info Resi* <b>${resi}</b>
+
+• *ID Order:* ${idOrder}
+• *Tanggal Order:* ${formatDate(tanggalOrder)}
+• *Nama:* ${nama}
+• *Kode Barang:* ${kodeBarang}
+• *Alamat:* ${alamat}
+• *Status Pengiriman:* <b>${statusPengiriman}</b>`;
+
+  sendTelegramMessage(chatId, null, textMessage);
+}
+
+// ==========================================
+// ================ Webhook Handling ========
+// ==========================================
+
+/**
+ * Main function to handle incoming POST requests from Telegram.
+ * @param {Object} e - The event object.
+ */
+function doPost(e) {
+  try {
+    const contents = JSON.parse(e.postData.contents);
+    const message = contents.message;
+
+    if (!message || !message.text) {
+      return;
+    }
+
+    const chatId = message.chat.id;
+    const receivedTextMessage = message.text.trim();
+
+    // Send an immediate response to the user
+    sendTelegramMessage(chatId, null, 'Processing your request...');
+
+    // Handle your command logic asynchronously
+    handleUserMessage(message);
+
+  } catch (err) {
+    log(`Error in doPost: ${err}`);
+    sendTelegramMessage(adminChatId, null, `🔴 **Error in doPost:** ${err.message}`);
+  }
+}
+
+/**
+ * Handles user messages and executes commands based on user input.
+ * @param {Object} message - The incoming message object.
+ */
+function handleUserMessage(message) {
+  const chatId = message.chat.id;
+  const receivedTextMessage = message.text.trim();
+  const command = receivedTextMessage.split(' ')[0].toLowerCase();
+  
+  switch (command) {
+    case '/start':
+      sendTelegramMessage(chatId, null, `👋 Hi! I'm your delivery assistant. Send your order details using the format:\n\nNama: [Your Name]\nKode Barang: [Item Code]\nAlamat: [Your Address]\nResi: [Tracking Number]`);
+      break;
+
+    case '/input':
+      const parsedData = parseMessage(receivedTextMessage);
+      if (parsedData) {
+        const idOrder = inputDataOrder({ ...parsedData, chatId });
+        if (idOrder) {
+          sendTelegramMessage(chatId, null, `✅ Order received successfully with ID: ${idOrder}`);
+        } else {
+          sendTelegramMessage(chatId, null, `❌ Failed to record your order. Please try again later.`);
+        }
+      } else {
+        sendTelegramMessage(chatId, null, `❌ Invalid input format. Please use:\n\nNama: [Your Name]\nKode Barang: [Item Code]\nAlamat: [Your Address]\nResi: [Tracking Number]`);
+      }
+      break;
+
+    case '/cekresi':
+      const resi = receivedTextMessage.split(' ')[1];
+      const statusMessage = cekResi(resi);
+      sendTelegramMessage(chatId, null, statusMessage);
+      break;
+
+    default:
+      sendTelegramMessage(chatId, null, `❓ Unknown command. Use /start to see the available commands.`);
+      break;
+  }
+}
